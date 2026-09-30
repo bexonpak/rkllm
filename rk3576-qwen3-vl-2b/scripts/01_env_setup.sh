@@ -172,6 +172,14 @@ setup_rknn_env() {
                 "huggingface_hub[cli]" -i "${PIP_INDEX}" \
         || c_warn "部分辅助依赖安装失败，导出时若报错请按提示补装"
 
+    # ★ onnxscript 是必须的：torch 2.6 的 torch.onnx.export 会无条件 import
+    #   torch.onnx._internal.exporter，而那里第一行就是 import onnxscript。
+    #   缺了它会在「模型已加载完、前向也算完」之后才报
+    #   ModuleNotFoundError: No module named 'onnxscript' —— 白白浪费一次运行。
+    c_info "安装 onnxscript（torch.onnx.export 的硬依赖）"
+    pip install "onnxscript" -i "${PIP_INDEX}" \
+        || die "onnxscript 安装失败：torch 2.6 的 torch.onnx.export 依赖它，没有它导不出 ONNX"
+
     python - <<'PY' || die "rknn-toolkit2 导入失败"
 from rknn.api import RKNN
 import transformers, onnx, torch

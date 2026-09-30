@@ -40,34 +40,65 @@ else
     c_info "使用官方 huggingface.co（国内慢的话设 HF_ENDPOINT=https://hf-mirror.com 重跑）"
 fi
 
-DOWNLOADER=""
-if command -v hf >/dev/null 2>&1; then
-    DOWNLOADER="hf"
-elif command -v huggingface-cli >/dev/null 2>&1; then
-    DOWNLOADER="huggingface-cli"
-fi
+# 忽略这些格式（只要 safetensors）。注意：**不要**用 CLI 的 --exclude：
+#   huggingface_hub 1.33.0 的 --exclude 只吃一个值，多给的会被当成位置参数
+#   （"要下载的文件名"），结果 "Fetching 0 files" 还返回成功 —— run #3 就是这么挂的。
+#   Python API 的 ignore_patterns 是真正的列表，跨版本稳定。
+IGNORE_PATTERNS="*.pth *.bin *.msgpack *.h5 *.ot"
 
-if [[ -n "${DOWNLOADER}" ]]; then
-    c_info "使用 ${DOWNLOADER} download -> ${MODEL_DIR}"
-    if [[ "${DOWNLOADER}" == "hf" ]]; then
-        hf download "${MODEL_ID}" --local-dir "${MODEL_DIR}" \
-            --exclude "*.pth" "*.bin" "*.msgpack" "*.h5" "*.ot" || die "hf download 失败"
+download_via_api() {
+    c_info "用 huggingface_hub.snapshot_download 下载 -> ${MODEL_DIR}"
+    HF_MODEL_ID="${MODEL_ID}" HF_LOCAL_DIR="${MODEL_DIR}" HF_IGNORE="${IGNORE_PATTERNS}" \
+    python - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id=os.environ["HF_MODEL_ID"],
+    local_dir=os.environ["HF_LOCAL_DIR"],
+    ignore_patterns=os.environ["HF_IGNORE"].split(),
+)
+print("[download] snapshot_download 完成")
+PY
+}
+
+download_via_cli() {
+    # 兜底：不带 --exclude。Qwen3-VL-2B 仓库本身只有 safetensors，没有 .bin/.pth
+    local cli="$1"
+    c_info "用 ${cli} download 下载（不带 --exclude）"
+    if [[ "${cli}" == "hf" ]]; then
+        hf download "${MODEL_ID}" --local-dir "${MODEL_DIR}"
     else
-        huggingface-cli download "${MODEL_ID}" --local-dir "${MODEL_DIR}" \
-            --exclude "*.pth" "*.bin" "*.msgpack" "*.h5" "*.ot" || die "huggingface-cli download 失败"
+        huggingface-cli download "${MODEL_ID}" --local-dir "${MODEL_DIR}"
     fi
-else
-    c_warn "没有 hf / huggingface-cli，回退到 git lfs"
+}
+
+download_via_git() {
+    c_warn "回退到 git lfs"
     need_cmd git "安装 git"
-    if ! git lfs version >/dev/null 2>&1; then
-        die "git-lfs 未安装。sudo apt-get install -y git-lfs  （或 pip install 'huggingface_hub[cli]'）"
-    fi
-    GIT_URL="https://huggingface.co/${MODEL_ID}"
-    [[ -n "${HF_ENDPOINT}" ]] && GIT_URL="${HF_ENDPOINT}/${MODEL_ID}"
+    git lfs version >/dev/null 2>&1 || die "git-lfs 未安装：sudo apt-get install -y git-lfs"
+    local url="https://huggingface.co/${MODEL_ID}"
+    [[ -n "${HF_ENDPOINT}" ]] && url="${HF_ENDPOINT}/${MODEL_ID}"
     rm -rf "${MODEL_DIR}"
-    GIT_LFS_SKIP_SMUDGE=1 git clone "${GIT_URL}" "${MODEL_DIR}" || die "git clone 失败"
+    GIT_LFS_SKIP_SMUDGE=1 git clone "${url}" "${MODEL_DIR}" || die "git clone 失败"
     ( cd "${MODEL_DIR}" && git lfs pull ) || die "git lfs pull 失败"
+}
+
+DL_OK=0
+if download_via_api; then
+    DL_OK=1
+else
+    c_warn "snapshot_download 失败，尝试 CLI 兜底方案"
+    if command -v hf >/dev/null 2>&1; then
+        download_via_cli hf && DL_OK=1
+    elif command -v huggingface-cli >/dev/null 2>&1; then
+        download_via_cli huggingface-cli && DL_OK=1
+    fi
+    if (( DL_OK == 0 )); then
+        download_via_git && DL_OK=1
+    fi
 fi
+(( DL_OK == 1 )) || die "模型下载失败（三种方式都试过了）"
 
 # --- 校验 ------------------------------------------------------------------
 banner "下载结果校验"

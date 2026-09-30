@@ -99,6 +99,9 @@ jobs:
         with:
           path: ~/rkllm-workspace
           key: qwen3vl-2b-instruct-model-v1
+          # 即使后面的步骤失败也保存缓存：模型下载成功但导出失败时，
+          # 下一次重跑就能省掉 4.3GB 下载（02 脚本有体积校验，半成品不会被误用）
+          save-always: true
 
       - name: 缓存 pip
         uses: actions/cache@v6
@@ -167,6 +170,9 @@ jobs:
         with:
           path: ~/rkllm-workspace
           key: qwen3vl-2b-instruct-model-v1
+          # 即使后面的步骤失败也保存缓存：模型下载成功但导出失败时，
+          # 下一次重跑就能省掉 4.3GB 下载（02 脚本有体积校验，半成品不会被误用）
+          save-always: true
 
       - name: 缓存 pip
         uses: actions/cache@v6

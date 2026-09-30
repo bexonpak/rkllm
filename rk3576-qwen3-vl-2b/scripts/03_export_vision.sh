@@ -24,6 +24,13 @@ c_info "视觉输入 ${IMG_HEIGHT}x${IMG_WIDTH} -> grid ${IMG_HEIGHT}/16 x ${IMG
 activate_env "${RKNN_ENV}"
 cd "${MM_DIR}"
 
+# 前置检查：缺 onnxscript 会在 ONNX 导出阶段才炸（那时 9GB 模型已经加载完，白等很久）
+python -c "import onnxscript, onnx, torch" 2>/dev/null \
+    || die "视觉环境缺少依赖（onnxscript / onnx / torch）。
+    torch 2.6 的 torch.onnx.export 必须要有 onnxscript：
+        conda activate ${RKNN_ENV} && pip install onnxscript
+    或重新运行 scripts/01_env_setup.sh --only rknn"
+
 # --- 1. 导出 ONNX ---------------------------------------------------------
 banner "3.1  export_vision.py  (HF -> ONNX)"
 c_warn "这一步以 float32 加载整个 Qwen3-VL-2B（约 9GB 权重 + 图开销），峰值内存可能 12-16GB"
