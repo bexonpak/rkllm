@@ -41,7 +41,10 @@ if ! _find_conda_sh >/dev/null 2>&1; then
     c_err "未找到 conda。请先安装 miniforge3（推荐，体积小、无 Anaconda 商业条款）："
     cat <<'EOF'
 
-  wget -c https://mirrors.bfsu.edu.cn/github-release/conda-forge/miniforge/LatestRelease/Miniforge3-Linux-x86_64.sh
+  # 官方源（海外最快）
+  wget -c https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+  # 国内可换镜像：
+  # wget -c https://mirrors.bfsu.edu.cn/github-release/conda-forge/miniforge/LatestRelease/Miniforge3-Linux-x86_64.sh
   bash Miniforge3-Linux-x86_64.sh        # 一路回车 + yes，最后 Proceed with initialization? 输入 yes
   source ~/miniforge3/bin/activate
 
@@ -99,14 +102,21 @@ setup_rkllm_env() {
     shopt -u nullglob
     (( ${#wheels[@]} > 0 )) || die "找不到 rkllm_toolkit 的 cp${RKLLM_PY_TAG} wheel（目录 ${RKLLM_TOOLKIT_PKGS}）"
     wheel="${wheels[0]}"
-    c_info "安装 $(basename "${wheel}")"
     pip install --upgrade pip -i "${PIP_INDEX}" >/dev/null
-    pip install "${wheel}" -i "${PIP_INDEX}" || die "安装 rkllm-toolkit wheel 失败"
 
-    # 先装 CPU 版 torch，避免 pip 顺带拉 2.5GB 的 nvidia-* CUDA 依赖
-    c_info "安装 CPU 版 torch==${RKLLM_TORCH} / torchvision"
+    # ★ 顺序很关键：必须先装 CPU 版 torch，再装 rkllm-toolkit wheel。
+    #   rkllm-toolkit 的元数据钉了 torch==2.6.0，如果先装 wheel，
+    #   pip 会立刻去拉 766MB 的「默认 PyPI torch」（带 CUDA），
+    #   还会连带拉 2.5GB 左右的 nvidia-* 依赖 —— 实测在海外 runner 上
+    #   走国内镜像时这一步就卡死了（766MB @ 170kB/s ≈ 76 分钟）。
+    #   先装好 torch==2.6.0+cpu 之后，PEP 440 规定 "==2.6.0" 匹配本地版本
+    #   2.6.0+cpu，pip 会认为依赖已满足，这 3GB+ 的下载就全省了。
+    c_info "先装 CPU 版 torch==${RKLLM_TORCH} / torchvision（省掉 CUDA 版 766MB + nvidia-* 约 2.5GB）"
     pip install "torch==${RKLLM_TORCH}" "torchvision==0.21.0" --index-url "${TORCH_CPU_INDEX}" \
-        || { c_warn "CPU 版 torch 安装失败，回退到 ${PIP_INDEX}"; pip install "torch==${RKLLM_TORCH}" "torchvision==0.21.0" -i "${PIP_INDEX}"; }
+        || { c_warn "CPU 版 torch 安装失败，回退到 ${PIP_INDEX}（会拉 CUDA 版，体积大很多）"; pip install "torch==${RKLLM_TORCH}" "torchvision==0.21.0" -i "${PIP_INDEX}"; }
+
+    c_info "安装 rkllm-toolkit wheel: $(basename "${wheel}")"
+    pip install "${wheel}" -i "${PIP_INDEX}" || die "安装 rkllm-toolkit wheel 失败"
 
     c_info "安装 huggingface_hub CLI（下载模型用）"
     pip install "huggingface_hub[cli]" -i "${PIP_INDEX}" >/dev/null || c_warn "huggingface_hub 安装失败"

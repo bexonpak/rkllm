@@ -38,8 +38,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && git lfs install --system
 
 # --- miniforge（用国内镜像，官方 conda-forge 亦可） --------------------------
-RUN wget -q -O /tmp/miniforge.sh \
-        https://mirrors.bfsu.edu.cn/github-release/conda-forge/miniforge/LatestRelease/Miniforge3-Linux-x86_64.sh \
+RUN ( wget -q -O /tmp/miniforge.sh \
+          https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh \
+      || wget -q -O /tmp/miniforge.sh \
+          https://mirrors.bfsu.edu.cn/github-release/conda-forge/miniforge/LatestRelease/Miniforge3-Linux-x86_64.sh ) \
     && bash /tmp/miniforge.sh -b -p /opt/conda \
     && rm -f /tmp/miniforge.sh \
     && /opt/conda/bin/conda clean -afy

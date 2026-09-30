@@ -33,14 +33,16 @@ case "$(uname -m)" in
 esac
 echo "[miniforge] 架构: $(uname -m) -> 安装包 Miniforge3-Linux-${MF_ARCH}.sh"
 
-# 依次尝试：国内镜像 -> 官方 GitHub release
+# 依次尝试：官方 GitHub release -> 国内镜像（兜底）
+# 顺序是这样定的：GitHub Actions 的 runner 在海外，官方源最快；
+# 国内本机跑 docker/local_build.sh 时，官方源失败后会自动回退到镜像。
 URLS=()
 if [[ -n "${MINIFORGE_URL:-}" ]]; then
     URLS+=("${MINIFORGE_URL}")
 fi
 URLS+=(
-    "https://mirrors.bfsu.edu.cn/github-release/conda-forge/miniforge/LatestRelease/Miniforge3-Linux-${MF_ARCH}.sh"
     "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-${MF_ARCH}.sh"
+    "https://mirrors.bfsu.edu.cn/github-release/conda-forge/miniforge/LatestRelease/Miniforge3-Linux-${MF_ARCH}.sh"
 )
 
 ok=0
