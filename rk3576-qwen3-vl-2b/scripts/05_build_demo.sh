@@ -116,7 +116,11 @@ copy_openmp_lib "libomp.so.1"
 ensure_dir "${OUTPUT_DIR}"
 rm -rf "${OUTPUT_DIR}/demo_Linux_aarch64"
 cp -a "${INSTALL_DIR}" "${OUTPUT_DIR}/"
-c_ok "板端包: ${OUTPUT_DIR}/demo_Linux_aarch64"
+# 把板端运行脚本放到 demo_Linux_aarch64 的**同级**目录：
+# run_demo.sh 里是 APP_DIR/demo_Linux_aarch64 的假设，模型也放在 APP_DIR 下
+cp -f "${KIT_DIR}/board/run_demo.sh" "${OUTPUT_DIR}/run_demo.sh"
+chmod +x "${OUTPUT_DIR}/run_demo.sh"
+c_ok "板端包: ${OUTPUT_DIR}/demo_Linux_aarch64 （+ run_demo.sh）"
 ls -lh "${OUTPUT_DIR}/demo_Linux_aarch64" | sed 's/^/    /'
 ls -lh "${OUTPUT_DIR}/demo_Linux_aarch64/lib" | sed 's/^/    /'
 

@@ -250,7 +250,7 @@ jobs:
         run: |
           set -euo pipefail
           OUT="${TREE}/${KIT}/output"
-          tar -czf "${OUT}/demo_Linux_aarch64.tar.gz" -C "${OUT}" demo_Linux_aarch64
+          tar -czf "${OUT}/demo_Linux_aarch64.tar.gz" -C "${OUT}" demo_Linux_aarch64 run_demo.sh
           ls -lh "${OUT}/demo_Linux_aarch64.tar.gz"
 
       - name: 发布 demo 到 Release
