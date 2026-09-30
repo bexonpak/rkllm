@@ -190,6 +190,17 @@ setup_rknn_env() {
                 "huggingface_hub[cli]" "onnxscript" -i "${PIP_INDEX}" \
         || c_warn "部分辅助依赖安装失败，导出时若报错请按提示补装"
 
+    # ★ rknn-toolkit2 的 rknn_base.py 里 import pkg_resources，
+    #   而 setuptools 从 **v82.0.0 起移除了 pkg_resources**（已核对 setuptools NEWS.rst）。
+    #   conda 建环境时默认装的就是 84.0.0，所以 RKNN() 一构造就报
+    #   ModuleNotFoundError: No module named 'pkg_resources'。
+    #   这里按需降级到 81.x（最后一个带 pkg_resources 的大版本）。
+    if ! python -c "import pkg_resources" >/dev/null 2>&1; then
+        c_warn "当前 setuptools 没有 pkg_resources（setuptools>=82 已移除），降级到 <82"
+        pip install "setuptools<82" -i "${PIP_INDEX}" \
+            || die "setuptools 降级失败：rknn-toolkit2 依赖 pkg_resources"
+    fi
+
     # ★ 装完强制校验版本。将来若有依赖把 torch 顶掉，这里立刻失败并说明原因，
     #   而不是等到 ONNX 导出时报一堆看不懂的 dynamo / symbolic shape 错误。
     python - <<'PY' || die "rknn 环境自检未通过（见上面的 FATAL 说明）"
@@ -198,8 +209,11 @@ import torch
 print("  torch         :", torch.__version__)
 print("  torchvision   :", __import__("torchvision").__version__)
 import transformers, onnx
+import pkg_resources  # rknn-toolkit2 需要它；setuptools>=82 已移除
 from rknn.api import RKNN
-print("  rknn-toolkit2 : OK")
+RKNN(verbose=False)   # 真正构造一次，确保能起来（而不是等转换时才炸）
+print("  rknn-toolkit2 : OK（RKNN 可构造）")
+print("  pkg_resources : OK")
 print("  transformers  :", transformers.__version__)
 print("  onnx          :", onnx.__version__)
 if not torch.__version__.startswith("2.4."):

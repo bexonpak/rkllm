@@ -24,12 +24,29 @@ c_info "视觉输入 ${IMG_HEIGHT}x${IMG_WIDTH} -> grid ${IMG_HEIGHT}/16 x ${IMG
 activate_env "${RKNN_ENV}"
 cd "${MM_DIR}"
 
-# 前置检查：缺 onnxscript 会在 ONNX 导出阶段才炸（那时 9GB 模型已经加载完，白等很久）
-python -c "import onnxscript, onnx, torch" 2>/dev/null \
-    || die "视觉环境缺少依赖（onnxscript / onnx / torch）。
-    torch 2.6 的 torch.onnx.export 必须要有 onnxscript：
-        conda activate ${RKNN_ENV} && pip install onnxscript
-    或重新运行 scripts/01_env_setup.sh --only rknn"
+# 前置检查：这些依赖问题都会在很后面才炸（缺 onnxscript 要等 9GB 模型加载完，
+# 缺 pkg_resources 要等 1.6GB ONNX 导完），所以提前几秒钟把它们验掉。
+python - <<'PY' || die "视觉环境自检未通过（见上面的报错）。
+    常见原因：
+      * 缺 onnxscript  -> torch.onnx.export 的硬依赖
+      * 缺 pkg_resources -> setuptools>=82 移除了它，而 rknn-toolkit2 需要
+    修法：bash scripts/01_env_setup.sh --only rknn"
+import sys
+import torch
+print("  torch        :", torch.__version__)
+if not torch.__version__.startswith("2.4."):
+    print("  [FATAL] torch 必须是 2.4.x：更新版本会走 dynamo 新导出器，")
+    print("          Qwen3-VL vision 会报 GuardOnDataDependentSymNode。")
+    sys.exit(1)
+import onnxscript, onnx, transformers
+print("  onnxscript   :", onnxscript.__version__)
+print("  onnx         :", onnx.__version__)
+print("  transformers :", transformers.__version__)
+import pkg_resources
+from rknn.api import RKNN
+RKNN(verbose=False)
+print("  rknn-toolkit2: OK（RKNN 可构造，pkg_resources 可用）")
+PY
 
 # --- 1. 导出 ONNX ---------------------------------------------------------
 banner "3.1  export_vision.py  (HF -> ONNX)"
