@@ -39,6 +39,39 @@ RKLLM 1.3.1 的 `rkllm.build()` 接口文档写死了上限：
 > 如果遇到 `No space left on device`，把 `.github/workflows/build-qwen3-vl-2b-rk3576.yml`
 > 里 `llm` job 的 `--only both` 改成 `--only rkllm`（省约 5GB）。
 
+## 构建结果（2026-09-30 实测）
+
+三个产物均已构建成功并发布到 [Releases](../../releases/tag/qwen3-vl-2b-rk3576)：
+
+| 产物 | 大小 | 关键参数 | sha256 |
+|---|---|---|---|
+| `qwen3-vl_vision_rk3576.rknn` | 873.5 MB | 输入 `pixel[1,3,448,448] + grid_thw[1,3]`，mean/std=0.5 | `06ae8e05…c9996` |
+| `qwen3-vl-2b-instruct_w4a16_rk3576.rkllm` | 1859.1 MB | `max_context=16384`、`w4a16`、`num_npu_core=2` | `983066fb…31e1e` |
+| `demo_Linux_aarch64.tar.gz` | 11.1 MB | 板端 demo（含 librknnrt/librkllmrt） | `29bef91d…2f6dbd` |
+
+每个产物旁边都有完整的 `.sha256.txt`，下载后可直接校验：
+
+```bash
+sha256sum -c qwen3-vl_vision_rk3576.rknn.sha256.txt
+```
+
+构建耗时：约 20-30 分钟（三个 job 并行；模型缓存命中后更快）。
+
+### 踩过的坑（都已修在套件里）
+
+这些问题的修法都写进了脚本注释，供以后再遇到时参考：
+
+| 现象 | 真因 |
+|---|---|
+| job 一开始就失败，`dd: /swapfile: Text file busy` | runner 镜像自带 3GB swap 就在 `/swapfile` 且正在使用；改为另建 `/swap-extra`，并让环境准备 fail-soft |
+| pip 下载慢到离谱（766MB 要 76 分钟） | 阿里云镜像在海外 runner 上极慢；改用官方源，并修正「先装 CPU torch 再装 wheel」的顺序（省掉 766MB + 2.5GB nvidia 依赖） |
+| `ModuleNotFoundError: onnxscript` | torch 2.6 的 `torch.onnx.export` 无条件 import 它；补装并加前置检查 |
+| `hf download` 报成功却下了 0 个文件 | `huggingface_hub` 1.33.0 的 `--exclude` 只收一个值，其余被当成文件名；改用 Python API `snapshot_download(ignore_patterns=[...])` |
+| `GuardOnDataDependentSymNode` | 未固定的 torchvision 把 torch 升到 2.14（默认 dynamo 导出器）；锁死 torch 2.4.0 + torchvision 0.19.0，并加版本断言 |
+| `ModuleNotFoundError: pkg_resources` | setuptools ≥82 移除了它，而 rknn-toolkit2 需要；按需降级 `setuptools<82` |
+
+---
+
 ## 板端部署
 
 ```bash
