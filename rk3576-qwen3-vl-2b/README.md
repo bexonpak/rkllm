@@ -174,7 +174,7 @@ git add .github && git commit -m "ci: build workflow" && git push
 ```
 
 需要注意 runner 的三个硬约束（workflow 里已经全部处理掉了）：
-**14GB 磁盘**（脚本会删预装 SDK 腾出 ~25GB）、
+**磁盘**（实测 runner 有 87GB 可用，脚本还会删预装 SDK 再腾出 ~23GB）、
 **16GB 内存**（公有仓库；脚本会加 swap 兜底）、
 **artifact 配额只有 500MB**（所以产物走 Release 附件，单文件上限 2GiB，超了自动分卷）。
 
@@ -250,7 +250,7 @@ rk3576-qwen3-vl-2b/
 │   ├── install_workflow.sh    # 把模板放到仓库的 .github/workflows/
 │   ├── install_miniforge.sh   # runner 上装固定位置的 miniforge3
 │   ├── prepare_tree.sh        # CI 里拼出「上游源码 + 本套件」的源码树
-│   ├── ci_free_space.sh       # 腾磁盘 + 加 swap（runner 只有 14GB/16GB）
+│   ├── ci_free_space.sh       # 腾磁盘 + 补 swap（实测 16GB RAM / 自带 3GB swap）
 │   └── publish_assets.sh      # 产物发到 Release（自动处理 2GiB 分卷）
 ├── scripts/
 │   ├── _common.sh             # 公共函数（日志/conda/自检）

@@ -8,11 +8,13 @@
 #        **纯 CPU** 计算、不需要 NPU，所以 CI 完全可以当转换机用。
 #
 #  runner 硬约束（不了解的话第一次必踩）：
-#    * 公有仓库: 4 vCPU / 16GB RAM / 14GB SSD，免费且不限分钟数
+#    * 公有仓库: 4 vCPU / 16GB RAM，免费且不限分钟数（实测根分区 87GB 可用）
 #      私有仓库: 2 vCPU /  8GB RAM / 14GB SSD，且消耗 2000 分钟/月的免费额度
 #      -> 强烈建议专门开一个 public 仓库来跑这个 workflow
-#    * 14GB 磁盘远远不够（模型 4.3GB + conda 环境 ~10GB + 产物 ~3GB）
-#      -> ci/ci_free_space.sh 删除预装 SDK，腾出约 25GB
+#    * 磁盘：模型 4.3GB + conda 环境 ~10GB + 产物 ~3GB（实测 runner 有 87GB 可用，够用）
+#      -> ci/ci_free_space.sh 仍会删预装 SDK 再腾出约 23GB，以防万一
+#    * swap：镜像自带 3GB（位于 /swapfile，已被占用）
+#      -> ci_free_space.sh 另建 /swap-extra 追加，且全程 fail-soft
 #    * 内存峰值 12-16GB（export_vision.py 要以 float32 加载整个 2B 模型）
 #      -> ci/ci_free_space.sh 同时加 swap 兜底，避免被 OOM Kill
 #    * artifact 存储配额只有 500MB（Free），放不下 1.5GB 的 .rkllm

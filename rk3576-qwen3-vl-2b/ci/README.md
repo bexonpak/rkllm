@@ -8,12 +8,22 @@
 
 | 约束 | GitHub 默认值 | 本项目的需求 | 对策（已写进 workflow） |
 |---|---|---|---|
-| 磁盘 | **14 GB SSD** | 模型 4.3GB + conda 环境 ~10GB + 产物 ~3GB | `ci/ci_free_space.sh` 删预装 SDK，腾出 ~25GB |
+| 磁盘 | 文档写 **14 GB SSD**，但**实测 runner 根分区有 87GB 可用**（清理后 110GB） | 模型 4.3GB + conda 环境 ~10GB + 产物 ~3GB | `ci/ci_free_space.sh` 删预装 SDK 腾出 ~23GB（通常不是瓶颈，留着以防万一） |
 | 内存 | **16 GB**（公有仓库）<br>**8 GB**（私有仓库） | 峰值 12-16GB（float32 加载整个 2B 模型） | 同脚本加 swap 兜底，避免无声 OOM Kill |
 | artifact 配额 | **500 MB**（Free）<br>1GB(Pro) / 2GB(Team) | `.rkllm` ~1.5GB、`.rknn` ~0.6GB | 不走 artifact，改发 **Release 附件**（单文件上限 2GiB） |
 
 参考：[GitHub-hosted runners 规格](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) ·
 [Actions 用量限制](https://docs.github.com/en/actions/reference/limits)
+
+> 下面是**第一次真实运行**（run #1）的实测数据，比文档更可信：
+> ```
+> /dev/root  146G  59G  87G  41% /        # 清理前可用 87GB（不是文档写的 14GB）
+> /dev/root  146G  37G 110G  25% /        # ci_free_space.sh 清理后可用 110GB
+> Mem:        15Gi  used 566Mi           # 内存 ~16GB，与文档一致
+> Swap:      3.0Gi    0B  3.0Gi          # ★ 镜像自带 3GB swap，位于 /swapfile
+> ```
+> 因为 `/swapfile` 已被占用，`ci_free_space.sh` 会**另建** `/swap-extra`
+> 而不是去覆盖它（早期版本就是这么把 job 搞挂的）。
 
 ---
 
@@ -21,7 +31,7 @@
 
 | | 公有仓库 | 私有仓库 |
 |---|---|---|
-| runner | 4 vCPU / **16 GB** / 14 GB | 2 vCPU / **8 GB** / 14 GB |
+| runner | 4 vCPU / **16 GB** / 实测 87GB 可用 | 2 vCPU / **8 GB** / 14 GB |
 | 分钟数 | **免费且不限** | 消耗额度（Free 2000 分钟/月） |
 | 本次构建耗时 | 约 40-90 分钟 | 更慢（内存不足会大量走 swap） |
 | 配额消耗 | 0 | 约 180-360 分钟/次 |
@@ -151,7 +161,7 @@ workflow 缓存了两样东西（`actions/cache`，仓库上限 10GB）：
 
 | 现象 | 原因 | 对策 |
 |---|---|---|
-| `No space left on device` | 14GB 不够，或 swap 把磁盘吃满 | ①把 job 里 `SWAP_GB` 调小（vision 12→6，llm 8→4）；②看日志里 `df -h /` 确认 `ci_free_space.sh` 真的释放了空间；③**最有效的一招**：把 `llm` job 的 `--only both` 改成 `--only rkllm`，少装一个 conda 环境，省约 5GB（代价：校准集在 rkllm 环境里生成失败时没有回退环境） |
+| `No space left on device` | 磁盘或 swap 把根分区吃满 | ①把 job 里 `SWAP_GB` 调小（vision 12→6，llm 8→4）；②看日志里 `df -h /` 确认 `ci_free_space.sh` 真的释放了空间；③**最有效的一招**：把 `llm` job 的 `--only both` 改成 `--only rkllm`，少装一个 conda 环境，省约 5GB（代价：校准集在 rkllm 环境里生成失败时没有回退环境） |
 | 进程被 `Killed`，Python 没有任何报错 | OOM | 加大 `SWAP_GB`；或改用 public 仓库（16GB 而非 8GB） |
 | `Resource not accessible by integration` / 上传附件 403 | workflow 没有写权限 | Settings → Actions → General → Workflow permissions 改成 Read and write |
 | `上传附件失败` 且文件接近 2GB | 超过 Release 单文件上限 | 已自动分卷；若仍失败，把 `SPLIT_THRESHOLD_MB` 调到 1500 |
