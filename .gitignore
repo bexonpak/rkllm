@@ -1,0 +1,17 @@
+# 构建产物不提交（产物走 Release 附件）
+**/output/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 本地构建用的工作区（模型、conda 环境、中间产物）
+rkllm-workspace/
+
+# macOS
+.DS_Store
+
+# 编辑器
+.idea/
+.vscode/

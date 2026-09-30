@@ -1,0 +1,276 @@
+# ============================================================================
+#  Qwen3-VL-2B -> RK3576 转换（GitHub Actions）
+#
+#  放到用户仓库：.github/workflows/build-qwen3-vl-2b-rk3576.yml
+#  （可执行  bash rk3576-qwen3-vl-2b/ci/install_workflow.sh  自动放好）
+#
+#  原理：GitHub 托管的 ubuntu runner 就是 Linux x86_64，而 RKLLM 的量化/转换是
+#        **纯 CPU** 计算、不需要 NPU，所以 CI 完全可以当转换机用。
+#
+#  runner 硬约束（不了解的话第一次必踩）：
+#    * 公有仓库: 4 vCPU / 16GB RAM / 14GB SSD，免费且不限分钟数
+#      私有仓库: 2 vCPU /  8GB RAM / 14GB SSD，且消耗 2000 分钟/月的免费额度
+#      -> 强烈建议专门开一个 public 仓库来跑这个 workflow
+#    * 14GB 磁盘远远不够（模型 4.3GB + conda 环境 ~10GB + 产物 ~3GB）
+#      -> ci/ci_free_space.sh 删除预装 SDK，腾出约 25GB
+#    * 内存峰值 12-16GB（export_vision.py 要以 float32 加载整个 2B 模型）
+#      -> ci/ci_free_space.sh 同时加 swap 兜底，避免被 OOM Kill
+#    * artifact 存储配额只有 500MB（Free），放不下 1.5GB 的 .rkllm
+#      -> 产物走 Release 附件（单文件上限 2GiB），见 ci/publish_assets.sh
+#
+#  触发方式：Actions 页面 -> Build Qwen3-VL-2B (RK3576) -> Run workflow
+# ============================================================================
+name: Build Qwen3-VL-2B (RK3576)
+
+on:
+  workflow_dispatch:
+    inputs:
+      quantized_dtype:
+        description: "量化类型（RK3576 只支持这几项）"
+        type: choice
+        options:
+          - w4a16
+          - w4a16_g32
+          - w4a16_g64
+          - w4a16_g128
+          - w8a8
+        default: w4a16
+      max_context:
+        description: "上下文长度（RKLLM 1.3.1 上限 16384 且须 32 对齐，超了脚本会拒绝）"
+        required: true
+        default: "16384"
+      num_npu_core:
+        description: "NPU 核心数（RK3576 只能是 1 或 2）"
+        required: true
+        default: "2"
+      upstream_ref:
+        description: "airockchip/rknn-llm 的分支或 tag"
+        required: true
+        default: "release-v1.3.1"
+      release_tag:
+        description: "产物发布到哪个 Release tag（重跑会覆盖同名附件）"
+        required: true
+        default: "qwen3-vl-2b-rk3576"
+      run_demo_build:
+        description: "是否同时交叉编译板端 demo"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write          # 发布 Release 必须
+
+concurrency:
+  group: build-qwen3vl-rk3576-${{ github.ref }}
+  cancel-in-progress: false
+
+# 只放静态值；依赖 inputs 的放到 job 级/step 级 env（那里的 inputs 上下文一定可用）
+env:
+  KIT: rk3576-qwen3-vl-2b
+
+jobs:
+  # --------------------------------------------------------------------------
+  # 1) 视觉编码器: HF -> ONNX -> RKNN
+  # --------------------------------------------------------------------------
+  vision:
+    name: 视觉编码器 (RKNN)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      # 必须放在 checkout 之后（脚本来自仓库）；它会腾出 ~25GB 并加 swap
+      - name: 清理磁盘并加 swap
+        env:
+          SWAP_GB: "12"
+        run: bash "${KIT}/ci/ci_free_space.sh"
+
+      - name: 准备源码树（克隆上游 + 放入本套件）
+        run: |
+          set -euo pipefail
+          TREE=$(bash "${KIT}/ci/prepare_tree.sh" "$GITHUB_WORKSPACE" "$RUNNER_TEMP/rknn-llm" "${{ inputs.upstream_ref }}")
+          echo "TREE=${TREE}" >> "$GITHUB_ENV"
+
+      - name: 缓存模型权重
+        uses: actions/cache@v6
+        with:
+          path: ~/rkllm-workspace
+          key: qwen3vl-2b-instruct-model-v1
+
+      - name: 缓存 pip
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/pip
+          key: pip-linux-vision-v1
+          restore-keys: pip-linux-vision-
+
+      # runner 上预装的 Miniconda 在 /usr/share/miniconda，位置不确定；
+      # 这里显式装一个固定位置的 miniforge3，保证 CONDA_HOME 推导稳定
+      - name: 安装 miniforge3
+        run: bash "${TREE}/${KIT}/ci/install_miniforge.sh"
+
+      - name: 安装 rknn-toolkit2 环境
+        run: |
+          bash "${TREE}/${KIT}/scripts/01_env_setup.sh" --only rknn
+          df -h /
+
+      - name: 下载模型
+        run: bash "${TREE}/${KIT}/scripts/02_download_model.sh"
+
+      - name: 导出视觉编码器 ONNX + RKNN
+        run: bash "${TREE}/${KIT}/scripts/03_export_vision.sh"
+
+      - name: 发布 .rknn 到 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          OUT="${TREE}/${KIT}/output"
+          ls -lh "${OUT}"
+          bash "${TREE}/${KIT}/ci/publish_assets.sh" "${RELEASE_TAG}" \
+            "${OUT}"/*.rknn "${OUT}"/*.rknn.info
+
+  # --------------------------------------------------------------------------
+  # 2) 语言模型: 量化校准集 + RKLLM（max_context 由输入决定）
+  # --------------------------------------------------------------------------
+  llm:
+    name: 语言模型 (RKLLM)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+    # job 级 env 里 inputs 上下文一定可用；这些值会被套件的 config.env 继承
+    env:
+      QUANTIZED_DTYPE: ${{ inputs.quantized_dtype }}
+      MAX_CONTEXT: ${{ inputs.max_context }}
+      NUM_NPU_CORE: ${{ inputs.num_npu_core }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: 清理磁盘并加 swap
+        env:
+          SWAP_GB: "8"
+        run: bash "${KIT}/ci/ci_free_space.sh"
+
+      - name: 准备源码树（克隆上游 + 放入本套件）
+        run: |
+          set -euo pipefail
+          TREE=$(bash "${KIT}/ci/prepare_tree.sh" "$GITHUB_WORKSPACE" "$RUNNER_TEMP/rknn-llm" "${{ inputs.upstream_ref }}")
+          echo "TREE=${TREE}" >> "$GITHUB_ENV"
+
+      - name: 缓存模型权重
+        uses: actions/cache@v6
+        with:
+          path: ~/rkllm-workspace
+          key: qwen3vl-2b-instruct-model-v1
+
+      - name: 缓存 pip
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/pip
+          key: pip-linux-llm-v1
+          restore-keys: pip-linux-llm-
+
+      # 装 both：04_export_llm.sh 在 rkllm 环境生成校准集失败时，会自动回退到
+      # rknn 环境（transformers 4.57.0）重试。多花几分钟，换一次跑通的把握。
+      # runner 上预装的 Miniconda 在 /usr/share/miniconda，位置不确定；
+      # 这里显式装一个固定位置的 miniforge3，保证 CONDA_HOME 推导稳定
+      - name: 安装 miniforge3
+        run: bash "${TREE}/${KIT}/ci/install_miniforge.sh"
+
+      - name: 安装 rkllm-toolkit + rknn-toolkit2 环境
+        run: |
+          bash "${TREE}/${KIT}/scripts/01_env_setup.sh" --only both
+          ~/miniforge3/bin/conda clean -afy || true
+          df -h /
+
+      - name: 下载模型
+        run: bash "${TREE}/${KIT}/scripts/02_download_model.sh"
+
+      - name: 生成校准集 + 构建导出 RKLLM
+        run: bash "${TREE}/${KIT}/scripts/04_export_llm.sh"
+
+      - name: 发布 .rkllm 到 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          OUT="${TREE}/${KIT}/output"
+          ls -lh "${OUT}"
+          bash "${TREE}/${KIT}/ci/publish_assets.sh" "${RELEASE_TAG}" \
+            "${OUT}"/*.rkllm "${OUT}"/*.rkllm.info
+
+  # --------------------------------------------------------------------------
+  # 3) 交叉编译板端 demo（很轻，几分钟）
+  # --------------------------------------------------------------------------
+  demo:
+    name: 板端 demo (aarch64)
+    if: ${{ inputs.run_demo_build }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: 准备源码树（克隆上游 + 放入本套件）
+        run: |
+          set -euo pipefail
+          TREE=$(bash "${KIT}/ci/prepare_tree.sh" "$GITHUB_WORKSPACE" "$RUNNER_TEMP/rknn-llm" "${{ inputs.upstream_ref }}")
+          echo "TREE=${TREE}" >> "$GITHUB_ENV"
+
+      - name: 安装交叉编译器
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cmake file
+
+      - name: 交叉编译
+        run: bash "${TREE}/${KIT}/scripts/05_build_demo.sh"
+
+      - name: 打包
+        run: |
+          set -euo pipefail
+          OUT="${TREE}/${KIT}/output"
+          tar -czf "${OUT}/demo_Linux_aarch64.tar.gz" -C "${OUT}" demo_Linux_aarch64
+          ls -lh "${OUT}/demo_Linux_aarch64.tar.gz"
+
+      - name: 发布 demo 到 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          OUT="${TREE}/${KIT}/output"
+          bash "${TREE}/${KIT}/ci/publish_assets.sh" "${RELEASE_TAG}" \
+            "${OUT}/demo_Linux_aarch64.tar.gz"
+
+  # --------------------------------------------------------------------------
+  # 4) 汇总到 Actions 摘要页
+  # --------------------------------------------------------------------------
+  summary:
+    name: 汇总
+    needs: [vision, llm]
+    if: ${{ always() }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 结果
+        run: |
+          {
+            echo "## Qwen3-VL-2B -> RK3576 构建结果"
+            echo ""
+            echo "| 任务 | 结果 |"
+            echo "|---|---|"
+            echo "| 视觉编码器 (.rknn) | ${{ needs.vision.result }} |"
+            echo "| 语言模型 (.rkllm) | ${{ needs.llm.result }} |"
+            echo "| 板端 demo | ${{ inputs.run_demo_build && '已启用' || '已跳过' }} |"
+            echo ""
+            echo "配置：dtype=\`${{ inputs.quantized_dtype }}\` / max_context=\`${{ inputs.max_context }}\` / npu_core=\`${{ inputs.num_npu_core }}\`"
+            echo ""
+            echo "产物：https://github.com/${{ github.repository }}/releases/tag/${{ inputs.release_tag }}"
+            echo ""
+            echo "> RKLLM 1.3.1 的上下文上限是 16384，32K 无法制作。"
+          } >> "$GITHUB_STEP_SUMMARY"
