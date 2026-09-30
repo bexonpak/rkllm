@@ -53,10 +53,15 @@ on:
         description: "产物发布到哪个 Release tag（重跑会覆盖同名附件）"
         required: true
         default: "qwen3-vl-2b-rk3576"
-      run_demo_build:
-        description: "是否同时交叉编译板端 demo"
-        type: boolean
-        default: true
+      run_jobs:
+        description: "跑哪些 job（迭代时可只跑需要重做的那一个，省时间）"
+        type: choice
+        options:
+          - all
+          - vision
+          - llm
+          - demo
+        default: all
 
 permissions:
   contents: write          # 发布 Release 必须
@@ -75,6 +80,7 @@ jobs:
   # --------------------------------------------------------------------------
   vision:
     name: 视觉编码器 (RKNN)
+    if: ${{ inputs.run_jobs == 'all' || inputs.run_jobs == 'vision' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 300
     steps:
@@ -142,6 +148,7 @@ jobs:
   # --------------------------------------------------------------------------
   llm:
     name: 语言模型 (RKLLM)
+    if: ${{ inputs.run_jobs == 'all' || inputs.run_jobs == 'llm' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 300
     # job 级 env 里 inputs 上下文一定可用；这些值会被套件的 config.env 继承
@@ -216,7 +223,7 @@ jobs:
   # --------------------------------------------------------------------------
   demo:
     name: 板端 demo (aarch64)
-    if: ${{ inputs.run_demo_build }}
+    if: ${{ inputs.run_jobs == 'all' || inputs.run_jobs == 'demo' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     steps:
@@ -274,7 +281,7 @@ jobs:
             echo "|---|---|"
             echo "| 视觉编码器 (.rknn) | ${{ needs.vision.result }} |"
             echo "| 语言模型 (.rkllm) | ${{ needs.llm.result }} |"
-            echo "| 板端 demo | ${{ inputs.run_demo_build && '已启用' || '已跳过' }} |"
+            echo "| 板端 demo | ${{ inputs.run_jobs == 'demo' || inputs.run_jobs == 'all' ? '已启用' : '已跳过' }} |"
             echo ""
             echo "配置：dtype=\`${{ inputs.quantized_dtype }}\` / max_context=\`${{ inputs.max_context }}\` / npu_core=\`${{ inputs.num_npu_core }}\`"
             echo ""

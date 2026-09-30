@@ -158,9 +158,21 @@ setup_rknn_env() {
 
     pip install --upgrade pip -i "${PIP_INDEX}" >/dev/null
 
-    c_info "安装 CPU 版 torch==${RKNN_TORCH}"
-    pip install "torch==${RKNN_TORCH}" --index-url "${TORCH_CPU_INDEX}" \
-        || { c_warn "CPU 版 torch 安装失败，回退"; pip install "torch==${RKNN_TORCH}" -i "${PIP_INDEX}"; }
+    # ★★ torch 必须锁在 2.4.x，torchvision 必须配套锁 0.19.0 ★★
+    #   这不是随手挑的版本，踩过两次坑：
+    #     1) rknn-toolkit2 2.3.2 的元数据是 "torch<=2.4.0,>=1.10.1"，
+    #        装 2.6.0 会在装 rknn-toolkit2 时被悄悄降级成 2.4.0；
+    #     2) 随后未固定版本的 torchvision 又会把 torch 顶到 2.14.0。
+    #   而 torch.onnx.export 在 2.4 里是 dynamo=False（TorchScript 旧导出器），
+    #   在 2.14 里默认 dynamo=True —— Qwen3-VL vision 的 forward 里有
+    #   grid_t*grid_h*grid_w 这种数据相关形状，dynamo 会直接失败：
+    #     GuardOnDataDependentSymNode: Could not extract specialized integer...
+    #   所以：torch/torchvision 成对固定，且这一行之后不允许再出现
+    #   不固定版本的 torch/torchvision。
+    c_info "安装 CPU 版 torch==${RKNN_TORCH} + torchvision==${RKNN_TORCHVISION}（配套版本，缺一不可）"
+    pip install "torch==${RKNN_TORCH}" "torchvision==${RKNN_TORCHVISION}" --index-url "${TORCH_CPU_INDEX}" \
+        || { c_warn "CPU 版 torch/torchvision 安装失败，回退到 ${PIP_INDEX}";
+             pip install "torch==${RKNN_TORCH}" "torchvision==${RKNN_TORCHVISION}" -i "${PIP_INDEX}"; }
 
     c_info "安装 ${RKNN_TOOLKIT2_SPEC}"
     pip install "${RKNN_TOOLKIT2_SPEC}" -i "${PIP_INDEX}" || die "rknn-toolkit2 安装失败"
@@ -168,25 +180,36 @@ setup_rknn_env() {
     c_info "安装 Qwen3-VL 视觉导出所需版本：transformers==${RKNN_TRANSFORMERS} onnx==${RKNN_ONNX}"
     pip install "transformers==${RKNN_TRANSFORMERS}" "onnx==${RKNN_ONNX}" -i "${PIP_INDEX}" \
         || die "transformers/onnx 安装失败"
-    pip install "torchvision" "timm" "pillow" "tqdm" "accelerate" "datasets" \
-                "huggingface_hub[cli]" -i "${PIP_INDEX}" \
+
+    # ★ onnxscript 也是硬依赖：torch.onnx.export 会无条件 import
+    #   torch.onnx._internal.exporter，那里第一行就是 import onnxscript。
+    #   缺了它会在「模型已加载完、前向也算完」之后才报 ModuleNotFoundError。
+    #   注意这里**故意不写 torchvision**（会顶掉上面固定的版本）。
+    c_info "安装辅助依赖 + onnxscript（onnxscript 是 torch.onnx.export 的硬依赖）"
+    pip install "timm" "pillow" "tqdm" "accelerate" "datasets" \
+                "huggingface_hub[cli]" "onnxscript" -i "${PIP_INDEX}" \
         || c_warn "部分辅助依赖安装失败，导出时若报错请按提示补装"
 
-    # ★ onnxscript 是必须的：torch 2.6 的 torch.onnx.export 会无条件 import
-    #   torch.onnx._internal.exporter，而那里第一行就是 import onnxscript。
-    #   缺了它会在「模型已加载完、前向也算完」之后才报
-    #   ModuleNotFoundError: No module named 'onnxscript' —— 白白浪费一次运行。
-    c_info "安装 onnxscript（torch.onnx.export 的硬依赖）"
-    pip install "onnxscript" -i "${PIP_INDEX}" \
-        || die "onnxscript 安装失败：torch 2.6 的 torch.onnx.export 依赖它，没有它导不出 ONNX"
-
-    python - <<'PY' || die "rknn-toolkit2 导入失败"
+    # ★ 装完强制校验版本。将来若有依赖把 torch 顶掉，这里立刻失败并说明原因，
+    #   而不是等到 ONNX 导出时报一堆看不懂的 dynamo / symbolic shape 错误。
+    python - <<'PY' || die "rknn 环境自检未通过（见上面的 FATAL 说明）"
+import sys
+import torch
+print("  torch         :", torch.__version__)
+print("  torchvision   :", __import__("torchvision").__version__)
+import transformers, onnx
 from rknn.api import RKNN
-import transformers, onnx, torch
 print("  rknn-toolkit2 : OK")
 print("  transformers  :", transformers.__version__)
 print("  onnx          :", onnx.__version__)
-print("  torch         :", torch.__version__)
+if not torch.__version__.startswith("2.4."):
+    print()
+    print("  [FATAL] 期望 torch 2.4.x，实际 %s。" % torch.__version__)
+    print("  rknn-toolkit2 要求 torch<=2.4.0；而且 torch.onnx.export 只有在")
+    print("  2.4 里才默认 dynamo=False（TorchScript 旧导出器）。更新版本会走")
+    print("  dynamo 新导出器，Qwen3-VL vision 会报 GuardOnDataDependentSymNode。")
+    print("  多半是某个依赖（常见：未固定版本的 torchvision）把 torch 顶上去了。")
+    sys.exit(1)
 PY
     conda deactivate || true
     c_ok "${RKNN_ENV} 就绪"
