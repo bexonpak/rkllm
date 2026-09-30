@@ -281,7 +281,7 @@ jobs:
             echo "|---|---|"
             echo "| 视觉编码器 (.rknn) | ${{ needs.vision.result }} |"
             echo "| 语言模型 (.rkllm) | ${{ needs.llm.result }} |"
-            echo "| 板端 demo | ${{ inputs.run_jobs == 'demo' || inputs.run_jobs == 'all' ? '已启用' : '已跳过' }} |"
+            echo "| 板端 demo | ${{ (inputs.run_jobs == 'demo' || inputs.run_jobs == 'all') && '已启用' || '已跳过' }} |"
             echo ""
             echo "配置：dtype=\`${{ inputs.quantized_dtype }}\` / max_context=\`${{ inputs.max_context }}\` / npu_core=\`${{ inputs.num_npu_core }}\`"
             echo ""

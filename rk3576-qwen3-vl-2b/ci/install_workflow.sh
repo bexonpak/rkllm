@@ -21,6 +21,17 @@ WF_NAME="build-qwen3-vl-2b-rk3576.yml"
 
 [[ -f "${SRC}" ]] || { echo "[ERROR] 找不到 workflow 模板: ${SRC}" >&2; exit 1; }
 
+# 推送前先 lint。GitHub Actions 的表达式限制（例如不支持 C 风格三元 '? :'）
+# 不会被 YAML 解析器发现，但会让**整个 workflow 文件解析失败**：
+# dispatch 直接 422，push 时还会多出一个以文件路径命名的失败 run。
+# 所以这一步必须在安装/提交之前跑。
+if command -v python3 >/dev/null 2>&1; then
+    python3 "${HERE}/lint_workflow.py" "${SRC}" || \
+        { echo "[ERROR] workflow lint 未通过，请先修好再安装（见上面提示）" >&2; exit 1; }
+else
+    echo "[WARN] 找不到 python3，跳过 workflow lint（有风险，见 ci/lint_workflow.py 说明）" >&2
+fi
+
 # --- 确定仓库根目录 ---------------------------------------------------------
 # 优先用参数；否则用 git 的真实顶层目录（比 "套件的上一级" 可靠）
 if [[ $# -ge 1 ]]; then
